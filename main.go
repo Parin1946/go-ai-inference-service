@@ -1,126 +1,113 @@
+
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"time"
 )
 
-// InferenceRequest represents the structure of an incoming inference request.
+// InferenceRequest represents the structure of an incoming AI inference request.
 type InferenceRequest struct {
-	InputData json.RawMessage `json:"input_data"` // Flexible input data
+	ModelName string        `json:"model_name"`
+	InputData   []float64     `json:"input_data"`
+	Parameters  map[string]interface{} `json:"parameters"`
 }
 
-// InferenceResponse represents the structure of an outgoing inference response.
+// InferenceResponse represents the structure of an outgoing AI inference response.
 type InferenceResponse struct {
-	Prediction  json.RawMessage `json:"prediction"`
-	ModelName   string          `json:"model_name"`
-	InferenceTime string          `json:"inference_time"`
-	Status      string          `json:"status"`
-	Message     string          `json:"message,omitempty"`
+	ModelName string        `json:"model_name"`
+	Prediction  []float64     `json:"prediction"`
+	Timestamp   time.Time     `json:"timestamp"`
+	LatencyMs   int64         `json:"latency_ms"`
+	Status      string        `json:"status"`
+	Error       string        `json:"error,omitempty"`
 }
 
-// simulateModelInference simulates an AI model inference process.
-// In a real application, this would involve loading a model and running prediction.
-func simulateModelInference(inputData json.RawMessage) (json.RawMessage, error) {
-	// For demonstration, we'll just echo the input as a 'prediction' after a delay.
-	// In a real scenario, you'd load your ONNX, TensorFlow Lite, or other model here
-	// and perform actual inference.
+// simulateInference simulates an AI model inference process.
+func simulateInference(req InferenceRequest) ([]float64, error) {
+	// In a real scenario, this would involve calling an actual AI model (e.g., TensorFlow Serving, PyTorch).
+	// For demonstration, we'll just return a dummy prediction based on input data.
 
-	// Simulate some processing time
-	time.Sleep(50 * time.Millisecond)
+	if len(req.InputData) == 0 {
+		return nil, fmt.Errorf("input data cannot be empty")
+	}
 
-	// Example: If input is {"features": [1, 2, 3]}, prediction could be {"class": "A"}
-	// For simplicity, we'll just return a dummy prediction or process the input.
-	var dummyPrediction map[string]interface{}
-	json.Unmarshal(inputData, &dummyPrediction)
-	
-	// A very basic simulation: if input has a 'text' field, predict sentiment.
-	// Otherwise, just return a generic success.
-	if text, ok := dummyPrediction["text"]; ok {
-		// Simple sentiment logic
-		if t, isString := text.(string); isString && len(t) > 10 && t[0] == 'g' {
-			dummyPrediction["sentiment"] = "positive"
+	// Simple simulation: sum of input data as a single prediction value
+	prediction := make([]float64, 1)
+	for _, val := range req.InputData {
+		prediction[0] += val
+	}
+
+	// Add some noise or complexity based on model name
+	switch req.ModelName {
+	case "sentiment_analysis":
+		prediction[0] = prediction[0] / float64(len(req.InputData)) // Average for sentiment
+		if prediction[0] > 0.5 {
+			prediction = []float64{0.9} // Positive
 		} else {
-			dummyPrediction["sentiment"] = "neutral"
+			prediction = []float64{0.1} // Negative
 		}
-	} else {
-		dummyPrediction["result"] = "simulated_success"
+	case "image_classifier":
+		prediction = []float64{0.1, 0.2, 0.7} // Example class probabilities
+	case "fraud_detection":
+		prediction = []float64{0.01} // Low fraud probability
+	default:
+		// Default to the sum
 	}
 
-	predictedOutput, err := json.Marshal(dummyPrediction)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal simulated prediction: %w", err)
-	}
-	return predictedOutput, nil
+	return prediction, nil
 }
 
 // inferenceHandler handles incoming AI inference requests.
 func inferenceHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	// Set response header
-	w.Header().Set("Content-Type", "application/json")
-
-	// Only allow POST requests
 	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST requests are allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Only POST requests are accepted", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Read the request body
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Error reading request body: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Parse the request
 	var req InferenceRequest
-	err = json.Unmarshal(body, &req)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Error parsing request JSON: %v", err), http.StatusBadRequest)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request payload: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	// Simulate model inference
-	prediction, err := simulateModelInference(req.InputData)
-	if err != nil {
-		log.Printf("Error during simulated inference: %v", err)
-		resp := InferenceResponse{
-			ModelName:   "simulated-model",
-			Status:      "error",
-			Message:     fmt.Sprintf("Inference failed: %v", err),
-			InferenceTime: time.Since(start).String(),
-		}
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(resp)
-		return
-	}
-
-	// Prepare response
+	prediction, err := simulateInference(req)
 	resp := InferenceResponse{
-		Prediction:  prediction,
-		ModelName:   "simulated-model",
-		InferenceTime: time.Since(start).String(),
-		Status:      "success",
+		ModelName: req.ModelName,
+		Timestamp: time.Now(),
+		Status:    "success",
 	}
 
-	// Send response
-	json.NewEncoder(w).Encode(resp)
-	log.Printf("Handled inference request in %s", time.Since(start))
+	if err != nil {
+		resp.Status = "error"
+		resp.Error = err.Error()
+		w.WriteHeader(http.StatusInternalServerError)
+	} else {
+		resp.Prediction = prediction
+		w.WriteHeader(http.StatusOK)
+	}
+
+	duration := time.Since(start)
+	resp.LatencyMs = duration.Milliseconds()
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("Error encoding response: %v", err)
+	}
 }
 
 func main() {
-	log.Println("Starting Go AI Inference Service...")
-	log.Println("Service will listen on :8080")
+	// Setup HTTP server
+	http.HandleFunc("/infer", inferenceHandler)
 
-	// Register handler for the /predict endpoint
-	http.HandleFunc("/predict", inferenceHandler)
-
-	// Start the HTTP server
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	port := ":8080"
+	fmt.Printf("AI Inference Service starting on port %s\n", port)
+	log.Fatal(http.ListenAndServe(port, nil))
 }
